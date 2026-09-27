@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createEventExecPlugin } from "../src/plugin.js"
+import { createEventExecPlugin, substitutePlaceholders } from "../src/plugin.js"
 
 const REGISTERED_EVENT = "session.idle"
 const UNREGISTERED_EVENT = "session.text.delta"
 
-type EventShape = { type: string }
+type EventShape = {
+  type: string
+  created?: unknown
+  data?: unknown
+}
 type SpawnListener = (...args: unknown[]) => void
 
 type FakeChildProcess = {
@@ -138,8 +142,118 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe("プレースホルダー置換の純関数", () => {
+  it("{event} をイベントタイプ名へ置換する", () => {
+    expect(substitutePlaceholders("{event}", { type: "session.idle" })).toBe("session.idle")
+  })
+
+  it("{sessionID} を data.sessionID が文字列のときだけ置換する", () => {
+    expect(
+      substitutePlaceholders("{sessionID}", { type: "session.created", data: { sessionID: "ses_abc123" } }),
+    ).toBe("ses_abc123")
+  })
+
+  it("{agent} を data.agent が文字列のときだけ置換する", () => {
+    expect(substitutePlaceholders("{agent}", { type: "session.created", data: { agent: "claude" } })).toBe(
+      "claude",
+    )
+  })
+
+  it("{model} を data.model が文字列のときだけ置換する", () => {
+    expect(substitutePlaceholders("{model}", { type: "session.created", data: { model: "glm" } })).toBe("glm")
+  })
+
+  it("{created} をトップレベル created の数値文字列へ置換する", () => {
+    expect(substitutePlaceholders("{created}", { type: "session.created", created: 1758940800000 })).toBe(
+      "1758940800000",
+    )
+  })
+
+  it("{data} を data 全体の compact JSON 1 引数へ置換する", () => {
+    expect(
+      substitutePlaceholders("{data}", {
+        type: "session.created",
+        data: { sessionID: "ses_abc123", agent: "claude", model: "glm" },
+      }),
+    ).toBe('{"sessionID":"ses_abc123","agent":"claude","model":"glm"}')
+  })
+
+  it("{data} は配列も compact JSON へ置換する", () => {
+    expect(substitutePlaceholders("{data}", { type: "custom.array", data: [1, 2] })).toBe("[1,2]")
+  })
+
+  it("data が null のとき {data} はリテラルのまま残す", () => {
+    expect(substitutePlaceholders("{data}", { type: "custom.null", data: null })).toBe("{data}")
+  })
+
+  it("data が object でないとき {data} はリテラルのまま残す", () => {
+    expect(substitutePlaceholders("{data}", { type: "custom.text", data: "payload" })).toBe("{data}")
+  })
+
+  it("data を省略したとき {data} はリテラルのまま残す", () => {
+    expect(substitutePlaceholders("{data}", { type: "session.created" })).toBe("{data}")
+  })
+
+  it("参照先が欠落したプレースホルダーはリテラルのまま残す", () => {
+    expect(substitutePlaceholders("{agent}", { type: "session.idle" })).toBe("{agent}")
+    expect(substitutePlaceholders("{sessionID}", { type: "session.idle" })).toBe("{sessionID}")
+    expect(substitutePlaceholders("{created}", { type: "session.idle" })).toBe("{created}")
+  })
+
+  it("参照先の型が一致しないプレースホルダーはリテラルのまま残す", () => {
+    expect(substitutePlaceholders("{sessionID}", { type: "custom", data: { sessionID: 7 } })).toBe("{sessionID}")
+    expect(substitutePlaceholders("{agent}", { type: "custom", data: { agent: 7 } })).toBe("{agent}")
+    expect(substitutePlaceholders("{model}", { type: "custom", data: { model: 7 } })).toBe("{model}")
+    expect(substitutePlaceholders("{created}", { type: "custom", created: "1758940800000" })).toBe("{created}")
+  })
+
+  it("未知のプレースホルダー名は検証せずリテラルのまま残す", () => {
+    expect(
+      substitutePlaceholders("{turn}", { type: "session.created", data: { sessionID: "ses_abc123" } }),
+    ).toBe("{turn}")
+  })
+
+  it("空白入りのプレースホルダー名は未成名としてリテラルのまま残す", () => {
+    expect(substitutePlaceholders("{ event }", { type: "session.created" })).toBe("{ event }")
+  })
+
+  it("引数に埋め込まれたプレースホルダーも置換する", () => {
+    expect(substitutePlaceholders("session {event} ended", { type: "session.created" })).toBe(
+      "session session.created ended",
+    )
+  })
+
+  it("同一引数内の複数出現を置換する", () => {
+    expect(
+      substitutePlaceholders("{event}-{created}", { type: "session.created", created: 1758940800000 }),
+    ).toBe("session.created-1758940800000")
+  })
+
+  it("同一プレースホルダーの重複出現を両方置換する", () => {
+    expect(substitutePlaceholders("{event}{event}", { type: "session.idle" })).toBe("session.idlesession.idle")
+  })
+
+  it("{{event}} は内側の {event} だけを置換し外側の波括弧を残す", () => {
+    expect(substitutePlaceholders("{{event}}", { type: "session.created" })).toBe("{session.created}")
+  })
+
+  it("置換結果に偶然含まれるプレースホルダーは再置換しない", () => {
+    expect(substitutePlaceholders("{sessionID}", { type: "custom", data: { sessionID: "{event}" } })).toBe(
+      "{event}",
+    )
+    expect(substitutePlaceholders("{data}", { type: "custom", data: { note: "{event}" } })).toBe(
+      '{"note":"{event}"}',
+    )
+  })
+
+  it("プレースホルダーを含まない引数はそのまま返す", () => {
+    expect(substitutePlaceholders("plain literal", { type: "session.idle" })).toBe("plain literal")
+    expect(substitutePlaceholders("", { type: "session.idle" })).toBe("")
+  })
+})
+
 describe("イベントタイプ名の完全一致によるルール発火", () => {
-  it("登録済みイベントタイプ名の到着で、ルールの command と args をリテラルのまま1回だけ実行する", async () => {
+  it("登録済みイベントタイプ名の到着で、プレースホルダーを含まない args はそのまま、{event} はイベントタイプ名へ置換して1回だけ実行する", async () => {
     const { stream, spawn } = await startPlugin({
       rules: [
         {
@@ -155,7 +269,7 @@ describe("イベントタイプ名の完全一致によるルール発火", () =
 
     expect(spawn).toHaveBeenCalledTimes(1)
     expect(spawn.mock.calls[0][0]).toBe("notify-runner")
-    expect(spawn.mock.calls[0][1]).toEqual(["--title", "session {event}", "plain literal"])
+    expect(spawn.mock.calls[0][1]).toEqual(["--title", "session session.idle", "plain literal"])
   })
 
   it("同一イベントタイプ名に登録した複数ルールを、子プロセスの完了を待たずすべて実行する", async () => {
@@ -391,5 +505,164 @@ describe("コマンドの実行環境", () => {
 
     const stdio = options.stdio
     expect(stdio === "ignore" || (Array.isArray(stdio) && stdio[0] === "ignore")).toBe(true)
+  })
+})
+
+describe("イベントから spawn argv へのプレースホルダー置換", () => {
+  it("{event} と {sessionID} を実フィールド値へ置換して argv に渡す", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [{ event: "session.created", command: "notify-runner", args: ["{event}", "{sessionID}"] }],
+    })
+
+    stream.push({ type: "session.created", data: { sessionID: "ses_abc123" } })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(spawn.mock.calls[0][0]).toBe("notify-runner")
+    expect(spawn.mock.calls[0][1]).toEqual(["session.created", "ses_abc123"])
+  })
+
+  it("{created} をエポックミリ秒の数値文字列として argv に渡す", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [{ event: "session.created", command: "notify-runner", args: ["{created}"] }],
+    })
+
+    stream.push({ type: "session.created", created: 1758940800000 })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+    expect(spawn.mock.calls[0][1]).toEqual(["1758940800000"])
+  })
+
+  it("{data} を compact JSON 文字列 1 引数として argv に渡す", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [{ event: "session.created", command: "notify-runner", args: ["{data}"] }],
+    })
+
+    stream.push({ type: "session.created", data: { sessionID: "ses_abc123", agent: "claude", model: "glm" } })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+    expect(spawn.mock.calls[0][1]).toEqual(['{"sessionID":"ses_abc123","agent":"claude","model":"glm"}'])
+  })
+
+  it("data を省略したイベントでは {data} をリテラルのまま argv に渡す", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [{ event: "session.created", command: "notify-runner", args: ["{data}"] }],
+    })
+
+    stream.push({ type: "session.created" })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(spawn.mock.calls[0][1]).toEqual(["{data}"])
+  })
+
+  it("埋め込み・複数出現・重複出現のプレースホルダーを argv へ置換する", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [
+        {
+          event: "session.created",
+          command: "notify-runner",
+          args: ["session {event} ended", "{event}-{created}", "{event}{event}"],
+        },
+      ],
+    })
+
+    stream.push({ type: "session.created", created: 1758940800000 })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+    expect(spawn.mock.calls[0][1]).toEqual([
+      "session session.created ended",
+      "session.created-1758940800000",
+      "session.createdsession.created",
+    ])
+  })
+
+  it("置換結果に偶然含まれるプレースホルダー文字列は再置換せず argv に渡す", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [{ event: "session.created", command: "notify-runner", args: ["{data}"] }],
+    })
+
+    stream.push({ type: "session.created", data: { note: "{event}" } })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+    expect(spawn.mock.calls[0][1]).toEqual(['{"note":"{event}"}'])
+  })
+
+  it("{{event}} は内側だけを置換した argv を渡す", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [{ event: "session.created", command: "notify-runner", args: ["{{event}}"] }],
+    })
+
+    stream.push({ type: "session.created" })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+    expect(spawn.mock.calls[0][1]).toEqual(["{session.created}"])
+  })
+
+  const unresolvedArgs: Array<{ label: string; event: EventShape; arg: string }> = [
+    { label: "data に agent がない", event: { type: "session.idle" }, arg: "{agent}" },
+    { label: "data に model がない", event: { type: "session.idle" }, arg: "{model}" },
+    {
+      label: "data.sessionID が文字列型でない",
+      event: { type: "session.idle", data: { sessionID: 7 } },
+      arg: "{sessionID}",
+    },
+    {
+      label: "トップレベルの created が数値型でない",
+      event: { type: "session.idle", created: "1758940800000" },
+      arg: "{created}",
+    },
+    { label: "data が null", event: { type: "session.idle", data: null }, arg: "{data}" },
+    {
+      label: "未知の名前",
+      event: { type: "session.created", data: { sessionID: "ses_abc123" } },
+      arg: "{turn}",
+    },
+    {
+      label: "空白入りの名前",
+      event: { type: "session.created", data: { sessionID: "ses_abc123" } },
+      arg: "{ event }",
+    },
+  ]
+
+  it.each(unresolvedArgs)(
+    "解決できないプレースホルダー($label)はリテラルのまま argv に渡す",
+    async ({ event, arg }) => {
+      const { stream, spawn } = await startPlugin({
+        rules: [{ event: event.type, command: "notify-runner", args: [arg] }],
+      })
+
+      stream.push(event)
+      await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+      expect(spawn.mock.calls[0][1]).toEqual([arg])
+    },
+  )
+
+  it("command は登録した文字列のまま起動し、置換は args の各要素だけに適用する", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [{ event: "session.created", command: "{event}-runner", args: ["{event}"] }],
+    })
+
+    stream.push({ type: "session.created" })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the rule to spawn")
+
+    expect(spawn.mock.calls[0][0]).toBe("{event}-runner")
+    expect(spawn.mock.calls[0][1]).toEqual(["session.created"])
+  })
+
+  it("同じルールが複数イベントで発火したとき、各イベントのフィールド値で毎回置換する", async () => {
+    const { stream, spawn } = await startPlugin({
+      rules: [{ event: "session.created", command: "notify-runner", args: ["{data}"] }],
+    })
+
+    stream.push({ type: "session.created", data: { sessionID: "ses_first" } })
+    await waitFor(() => spawn.mock.calls.length >= 1, "the first event to spawn")
+
+    stream.push({ type: "session.created", data: { sessionID: "ses_second" } })
+    await waitFor(() => spawn.mock.calls.length >= 2, "the second event to spawn")
+
+    expect(spawn.mock.calls[0][1]).toEqual(['{"sessionID":"ses_first"}'])
+    expect(spawn.mock.calls[1][1]).toEqual(['{"sessionID":"ses_second"}'])
   })
 })
