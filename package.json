@@ -1,0 +1,28 @@
+{
+  "name": "opencode-event-exec",
+  "version": "0.1.0",
+  "description": "Run custom commands and scripts in response to OpenCode v2 events.",
+  "type": "module",
+  "license": "BSD-2-Clause",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}
