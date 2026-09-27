@@ -1,5 +1,7 @@
 export interface EventShape {
   readonly type: string
+  readonly created?: unknown
+  readonly data?: unknown
 }
 
 export interface EventExecContext {
@@ -36,6 +38,40 @@ interface AdoptedRule {
 }
 
 const PLUGIN_ID = "opencode-event-exec"
+
+const PLACEHOLDER_PATTERN = /\{(event|sessionID|agent|model|created|data)\}/g
+
+export function substitutePlaceholders(arg: string, event: EventShape): string {
+  return arg.replace(PLACEHOLDER_PATTERN, (placeholder, name: string) => {
+    const value = resolvePlaceholder(name, event)
+    return value === undefined ? placeholder : value
+  })
+}
+
+function resolvePlaceholder(name: string, event: EventShape): string | undefined {
+  switch (name) {
+    case "event":
+      return event.type
+    case "sessionID":
+      return readStringField(event.data, "sessionID")
+    case "agent":
+      return readStringField(event.data, "agent")
+    case "model":
+      return readStringField(event.data, "model")
+    case "created":
+      return typeof event.created === "number" ? String(event.created) : undefined
+    case "data":
+      return typeof event.data === "object" && event.data !== null ? JSON.stringify(event.data) : undefined
+    default:
+      return undefined
+  }
+}
+
+function readStringField(source: unknown, key: string): string | undefined {
+  if (typeof source !== "object" || source === null) return undefined
+  const value = (source as Record<string, unknown>)[key]
+  return typeof value === "string" ? value : undefined
+}
 
 export function createEventExecPlugin(config: { readonly spawn: SpawnCommand }): EventExecPlugin {
   return {
@@ -84,14 +120,15 @@ async function consumeEvents(
   for await (const event of context.event.subscribe()) {
     for (const rule of rules) {
       if (rule.event !== event.type) continue
-      startCommand(rule, spawn)
+      startCommand(rule, event, spawn)
     }
   }
 }
 
-function startCommand(rule: AdoptedRule, spawn: SpawnCommand): void {
+function startCommand(rule: AdoptedRule, event: EventShape, spawn: SpawnCommand): void {
   try {
-    const child = spawn(rule.command, rule.args, { shell: false, stdio: ["ignore", "ignore", "ignore"] })
+    const args = rule.args.map((arg) => substitutePlaceholders(arg, event))
+    const child = spawn(rule.command, args, { shell: false, stdio: ["ignore", "ignore", "ignore"] })
     child.on("error", (error) => reportSpawnFailure(rule.command, error))
   } catch (error) {
     reportSpawnFailure(rule.command, error)

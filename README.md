@@ -50,7 +50,15 @@ npm pack
 - `package`: 生成した tarball の絶対パスを `file:` に続けて書く。
 - `options.rules[].event`: OpenCode v2 のイベントタイプ名。登録した名前と完全一致するイベントだけが対象になる。
 - `options.rules[].command`: 実行するファイル。シェルを介さずに起動される。
-- `options.rules[].args`: 省略可能な文字列配列。`{event}` などの置換は行わず、書いた文字列のまま引数として渡る。
+- `options.rules[].args`: 省略可能な文字列配列。次の 6 種のプレースホルダーはイベントの実フィールド値に置換される。
+  - `{event}`: イベントタイプ名
+  - `{sessionID}`: `data.sessionID`(文字列のとき)
+  - `{agent}`: `data.agent`(文字列のとき)
+  - `{model}`: `data.model`(文字列のとき)
+  - `{created}`: トップレベルの `created`(数値のとき、エポックミリ秒の文字列)
+  - `{data}`: `data` 全体(null でない object のとき、compact JSON 文字列)
+- 参照先がイベントに存在しない場合、空文字列には置換せず `{agent}` のようなリテラル文字列のまま引数に渡る。
+- プレースホルダーの置換は `args` の各要素だけに適用され、`command` には適用しない。
 
 `options.rules[].command` に登録したコマンドは、OpenCode を実行しているユーザーの権限で実行される。信頼できるコマンドのみを登録すること。
 
@@ -67,3 +75,5 @@ opencode-event-exec: failed to spawn <command>: <理由>
 ```
 
 起動に成功したコマンドと、終了コードが非ゼロのコマンドでは、stderr に何も出力されない。
+
+4. `args` にプレースホルダーを書いたルールでは、イベントが持つ実フィールド値(例: `session.created` の `data.sessionID`)に置換されてコマンドが実行される。参照先がないプレースホルダーは `{agent}` のリテラルのまま渡る。
